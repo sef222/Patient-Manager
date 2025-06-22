@@ -16,10 +16,20 @@ import ctypes.wintypes
 import sv_ttk
 import pywinstyles
 import darkdetect
+import warnings; warnings.filterwarnings("ignore")
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 ICON_PATH = os.path.join(BASE_DIR, "assets/icon.ico")
+
+VIEW_BATCH_SIZE = 250
+view_offset = 0
+sorted_names_cache = []
+
+
+
+
+
 
 def go_to_patient_view(name):
     # Switch to View tab
@@ -278,13 +288,13 @@ def clear_logs():
     log_access("Logs cleared")
 
 def open_settings():
-    win = tk.Toplevel(app)
-    win.iconbitmap(ICON_PATH)
-
-    settings = tk.Toplevel(app)
+    settings = tk.Toplevel()
     settings.title("Settings")
     settings.geometry("400x300")
+    settings.iconbitmap(ICON_PATH)
+
     ttk.Label(settings, text="Settings", font=("Segoe UI", 14)).pack(pady=10)
+
     if user_mode == "admin":
         ttk.Button(settings, text="Change Password", command=change_password).pack(pady=5)
         ttk.Button(settings, text="View Logs", command=view_logs).pack(pady=5)
@@ -295,29 +305,51 @@ def add_patient():
     name = name_var.get().strip()
     fnum = fnum_var.get().strip()
     mobile = mob_var.get().strip()
+
     if not name:
         messagebox.showerror("Invalid", "Name cannot be empty")
         return
     if name in patients_data:
         messagebox.showerror("Duplicate", "Patient already exists")
         return
+
     patients_data[name] = {"folder": fnum, "mobile": mobile, "visits": []}
     save_data()
-    refresh_view()
+
+    sorted_names_cache.append(name)
+    sorted_names_cache.sort()
+
+    tree.insert('', 'end', values=(name, fnum, mobile))  # insert only the new one
     log_access(f"Added patient: {name}")
+
     name_var.set("")
     fnum_var.set("")
     mob_var.set("")
 
-def refresh_view():
-    tree.delete(*tree.get_children())
-    sorted_names = sorted(patients_data.keys())
-    for name in sorted_names:
+
+def refresh_view(batch_size=VIEW_BATCH_SIZE):
+    global view_offset
+
+    if 'tree' not in globals() or 'load_more_btn' not in globals():
+        return
+
+    total = len(sorted_names_cache)
+    display_names = sorted_names_cache[view_offset:view_offset + batch_size]
+
+    for name in display_names:
         data = patients_data[name]
         tree.insert('', 'end', values=(name, data['folder'], data['mobile']))
+
+    view_offset += len(display_names)
+
     clear_patient_info()
     edit_btn.config(state='disabled')
     delete_btn.config(state='disabled')
+
+    if view_offset < total:
+        load_more_btn.pack(pady=5)
+    else:
+        load_more_btn.pack_forget()
 
 def on_tree_select(event):
     selected = tree.selection()
@@ -384,8 +416,15 @@ def edit_patient(name):
 def delete_patient(name):
     if messagebox.askyesno("Confirm Delete", f"Delete patient '{name}'?"):
         patients_data.pop(name, None)
+        if name in sorted_names_cache:
+            sorted_names_cache.remove(name)
         save_data()
-        refresh_view()
+
+        for item in tree.get_children():
+            if tree.item(item, 'values')[0] == name:
+                tree.delete(item)
+                break
+
         refresh_search()
         clear_patient_info()
         log_access(f"Deleted patient: {name}")
@@ -615,6 +654,8 @@ def search():
 
 
 
+
+
 if __name__ == "__main__":
     if not login():
         sys.exit()
@@ -633,6 +674,7 @@ if __name__ == "__main__":
     sv_ttk.set_theme("light")
  # Auto dark/light
     apply_theme_to_titlebar(app)
+      # show 0 first, let refresh_view() handle it
 
 
     toolbar = tk.Frame(app, bg="lightgray")
@@ -653,6 +695,10 @@ if __name__ == "__main__":
     tabs.add(add_tab, text='Add Patient')
     tabs.add(view_tab, text='View Patients')
     tabs.add(search_tab, text='Search')
+    load_more_btn = ttk.Button(view_tab, text="Load More", command=lambda: refresh_view())
+    load_more_btn.pack_forget()
+    refresh_view(0)
+
 
     # Add Patient tab UI
     name_var = tk.StringVar()
@@ -701,8 +747,13 @@ if __name__ == "__main__":
     search_entry = ttk.Entry(search_tab, textvariable=search_var)
     search_entry.pack(pady=5)
 
-    search_btn = ttk.Button(search_tab, text="Search", command=search)
-    search_btn.pack(pady=5)
+    def delayed_search(*_):
+        if hasattr(app, "_search_timer"):
+            app.after_cancel(app._search_timer)
+        app._search_timer = app.after(300, search)
+
+    search_entry.bind("<KeyRelease>", delayed_search)
+
 
     progress_var = tk.DoubleVar()
     progress_bar = ttk.Progressbar(search_tab, variable=progress_var, maximum=100)
@@ -729,6 +780,14 @@ if __name__ == "__main__":
 
     search_results = scrollable_frame
 
+    patients_data = load_data()
+    sorted_names_cache = sorted(patients_data.keys())
+
+
+
+
 
     refresh_view()
     app.mainloop()
+
+    
